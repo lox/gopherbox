@@ -2,12 +2,15 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -30,14 +33,14 @@ func cmdCat(_ context.Context, args []string, ioCtx CommandIO) int {
 		abs := resolvePath(ioCtx.Cwd, arg)
 		f, err := ioCtx.Fs.Open(abs)
 		if err != nil {
-			writeErrf(ioCtx, "cat: %s: %v\n", arg, err)
+			writeErrf(ioCtx, "cat: %s: %s\n", arg, fileOpError(err))
 			exitCode = 1
 			continue
 		}
 		_, err = io.Copy(ioCtx.Stdout, f)
 		_ = f.Close()
 		if err != nil {
-			writeErrf(ioCtx, "cat: %s: %v\n", arg, err)
+			writeErrf(ioCtx, "cat: %s: %s\n", arg, fileOpError(err))
 			exitCode = 1
 		}
 	}
@@ -77,7 +80,7 @@ func cmdCp(_ context.Context, args []string, ioCtx CommandIO) int {
 		srcAbs := resolvePath(ioCtx.Cwd, srcArg)
 		srcInfo, err := ioCtx.Fs.Stat(srcAbs)
 		if err != nil {
-			writeErrf(ioCtx, "cp: cannot stat '%s': %v\n", srcArg, err)
+			writeErrf(ioCtx, "cp: cannot stat '%s': %s\n", srcArg, fileOpError(err))
 			exitCode = 1
 			continue
 		}
@@ -94,14 +97,14 @@ func cmdCp(_ context.Context, args []string, ioCtx CommandIO) int {
 				continue
 			}
 			if err := copyDir(ioCtx.Fs, srcAbs, targetAbs); err != nil {
-				writeErrf(ioCtx, "cp: %v\n", err)
+				writeErrf(ioCtx, "cp: cannot copy '%s': %s\n", srcArg, fileOpError(err))
 				exitCode = 1
 			}
 			continue
 		}
 
 		if err := copyFile(ioCtx.Fs, srcAbs, targetAbs); err != nil {
-			writeErrf(ioCtx, "cp: %v\n", err)
+			writeErrf(ioCtx, "cp: cannot copy '%s': %s\n", srcArg, fileOpError(err))
 			exitCode = 1
 		}
 	}
@@ -199,7 +202,7 @@ func cmdLs(_ context.Context, args []string, ioCtx CommandIO) int {
 		abs := resolvePath(ioCtx.Cwd, target)
 		info, err := ioCtx.Fs.Stat(abs)
 		if err != nil {
-			writeErrf(ioCtx, "ls: cannot access '%s': %v\n", target, err)
+			writeErrf(ioCtx, "ls: cannot access '%s': %s\n", target, fileOpError(err))
 			exitCode = 1
 			continue
 		}
@@ -222,9 +225,22 @@ func cmdLs(_ context.Context, args []string, ioCtx CommandIO) int {
 
 		entries, err := afero.ReadDir(ioCtx.Fs, abs)
 		if err != nil {
-			writeErrf(ioCtx, "ls: %s: %v\n", target, err)
+			writeErrf(ioCtx, "ls: %s: %s\n", target, fileOpError(err))
 			exitCode = 1
 			continue
+		}
+		if showAll {
+			if longFmt {
+				_, _ = fmt.Fprintf(ioCtx.Stdout, "%s %8d %s\n", info.Mode().String(), info.Size(), ".")
+				parentInfo := info
+				if pInfo, pErr := ioCtx.Fs.Stat(resolvePath(abs, "..")); pErr == nil {
+					parentInfo = pInfo
+				}
+				_, _ = fmt.Fprintf(ioCtx.Stdout, "%s %8d %s\n", parentInfo.Mode().String(), parentInfo.Size(), "..")
+			} else {
+				_, _ = fmt.Fprintln(ioCtx.Stdout, ".")
+				_, _ = fmt.Fprintln(ioCtx.Stdout, "..")
+			}
 		}
 		for _, entry := range entries {
 			name := entry.Name()
@@ -267,7 +283,7 @@ func cmdMkdir(_ context.Context, args []string, ioCtx CommandIO) int {
 			err = ioCtx.Fs.Mkdir(abs, 0o755)
 		}
 		if err != nil {
-			writeErrf(ioCtx, "mkdir: %s: %v\n", target, err)
+			writeErrf(ioCtx, "mkdir: %s: %s\n", target, fileOpError(err))
 			exitCode = 1
 		}
 	}
@@ -298,7 +314,7 @@ func cmdMv(_ context.Context, args []string, ioCtx CommandIO) int {
 			target = filepath.Join(dstAbs, filepath.Base(srcAbs))
 		}
 		if err := ioCtx.Fs.Rename(srcAbs, target); err != nil {
-			writeErrf(ioCtx, "mv: %s: %v\n", srcArg, err)
+			writeErrf(ioCtx, "mv: %s: %s\n", srcArg, fileOpError(err))
 			exitCode = 1
 		}
 	}
@@ -338,7 +354,7 @@ func cmdRm(_ context.Context, args []string, ioCtx CommandIO) int {
 		info, err := ioCtx.Fs.Stat(abs)
 		if err != nil {
 			if !force {
-				writeErrf(ioCtx, "rm: cannot remove '%s': %v\n", target, err)
+				writeErrf(ioCtx, "rm: cannot remove '%s': %s\n", target, fileOpError(err))
 				exitCode = 1
 			}
 			continue
@@ -356,7 +372,7 @@ func cmdRm(_ context.Context, args []string, ioCtx CommandIO) int {
 			err = ioCtx.Fs.Remove(abs)
 		}
 		if err != nil && !force {
-			writeErrf(ioCtx, "rm: cannot remove '%s': %v\n", target, err)
+			writeErrf(ioCtx, "rm: cannot remove '%s': %s\n", target, fileOpError(err))
 			exitCode = 1
 		}
 	}
@@ -373,7 +389,7 @@ func cmdRmdir(_ context.Context, args []string, ioCtx CommandIO) int {
 	for _, arg := range args {
 		abs := resolvePath(ioCtx.Cwd, arg)
 		if err := ioCtx.Fs.Remove(abs); err != nil {
-			writeErrf(ioCtx, "rmdir: %s: %v\n", arg, err)
+			writeErrf(ioCtx, "rmdir: %s: %s\n", arg, fileOpError(err))
 			exitCode = 1
 		}
 	}
@@ -392,7 +408,7 @@ func cmdTouch(_ context.Context, args []string, ioCtx CommandIO) int {
 		abs := resolvePath(ioCtx.Cwd, arg)
 		if _, err := ioCtx.Fs.Stat(abs); err != nil {
 			if err := afero.WriteFile(ioCtx.Fs, abs, nil, 0o644); err != nil {
-				writeErrf(ioCtx, "touch: %s: %v\n", arg, err)
+				writeErrf(ioCtx, "touch: %s: %s\n", arg, fileOpError(err))
 				exitCode = 1
 			}
 			continue
@@ -400,7 +416,7 @@ func cmdTouch(_ context.Context, args []string, ioCtx CommandIO) int {
 		if err := ioCtx.Fs.Chtimes(abs, now, now); err != nil {
 			// Some afero backends do not support Chtimes; tolerate this.
 			if err := afero.WriteFile(ioCtx.Fs, abs, mustReadFile(ioCtx.Fs, abs), 0o644); err != nil {
-				writeErrf(ioCtx, "touch: %s: %v\n", arg, err)
+				writeErrf(ioCtx, "touch: %s: %s\n", arg, fileOpError(err))
 				exitCode = 1
 			}
 		}
@@ -438,9 +454,10 @@ func cmdLn(_ context.Context, args []string, ioCtx CommandIO) int {
 	linkAbs := resolvePath(ioCtx.Cwd, filtered[1])
 
 	if symbolic {
+		symlinkTarget := resolvePath(ioCtx.Cwd, src)
 		if linker, ok := ioCtx.Fs.(afero.Linker); ok {
-			if err := linker.SymlinkIfPossible(src, linkAbs); err != nil {
-				writeErrf(ioCtx, "ln: %v\n", err)
+			if err := linker.SymlinkIfPossible(symlinkTarget, linkAbs); err != nil {
+				writeErrf(ioCtx, "ln: %s\n", fileOpError(err))
 				return 1
 			}
 			return 0
@@ -452,7 +469,7 @@ func cmdLn(_ context.Context, args []string, ioCtx CommandIO) int {
 	// Hard links are emulated as file copies.
 	srcAbs := resolvePath(ioCtx.Cwd, src)
 	if err := copyFile(ioCtx.Fs, srcAbs, linkAbs); err != nil {
-		writeErrf(ioCtx, "ln: %v\n", err)
+		writeErrf(ioCtx, "ln: %s\n", fileOpError(err))
 		return 1
 	}
 	return 0
@@ -469,7 +486,7 @@ func cmdStat(_ context.Context, args []string, ioCtx CommandIO) int {
 		abs := resolvePath(ioCtx.Cwd, arg)
 		info, err := ioCtx.Fs.Stat(abs)
 		if err != nil {
-			writeErrf(ioCtx, "stat: cannot stat '%s': %v\n", arg, err)
+			writeErrf(ioCtx, "stat: cannot stat '%s': %s\n", arg, fileOpError(err))
 			exitCode = 1
 			continue
 		}
@@ -489,9 +506,14 @@ func cmdReadlink(_ context.Context, args []string, ioCtx CommandIO) int {
 	if lr, ok := ioCtx.Fs.(afero.LinkReader); ok {
 		target, err := lr.ReadlinkIfPossible(resolvePath(ioCtx.Cwd, args[0]))
 		if err != nil {
-			writeErrf(ioCtx, "readlink: %v\n", err)
+			if errors.Is(err, iofs.ErrNotExist) {
+				writeErrf(ioCtx, "readlink: %s: no such file or directory\n", args[0])
+				return 1
+			}
+			writeErrf(ioCtx, "readlink: %s: %s\n", args[0], fileOpError(err))
 			return 1
 		}
+		target = mapReadlinkTarget(ioCtx.Fs, target)
 		_, _ = fmt.Fprintln(ioCtx.Stdout, target)
 		return 0
 	}
@@ -506,7 +528,7 @@ func cmdTree(_ context.Context, args []string, ioCtx CommandIO) int {
 	}
 	rootAbs := resolvePath(ioCtx.Cwd, root)
 	if _, err := ioCtx.Fs.Stat(rootAbs); err != nil {
-		writeErrf(ioCtx, "tree: %s: %v\n", root, err)
+		writeErrf(ioCtx, "tree: %s: %s\n", root, fileOpError(err))
 		return 1
 	}
 
@@ -547,7 +569,7 @@ func cmdFile(_ context.Context, args []string, ioCtx CommandIO) int {
 		abs := resolvePath(ioCtx.Cwd, arg)
 		info, err := ioCtx.Fs.Stat(abs)
 		if err != nil {
-			writeErrf(ioCtx, "file: %s: %v\n", arg, err)
+			writeErrf(ioCtx, "file: %s: %s\n", arg, fileOpError(err))
 			exitCode = 1
 			continue
 		}
@@ -586,4 +608,72 @@ func isMostlyText(b []byte) bool {
 		}
 	}
 	return float64(printable)/float64(len(b)) > 0.8
+}
+
+func mapReadlinkTarget(fs afero.Fs, target string) string {
+	if !filepath.IsAbs(target) {
+		return target
+	}
+
+	type realPathFs interface {
+		RealPath(name string) (string, error)
+	}
+
+	bp, ok := fs.(realPathFs)
+	if !ok {
+		return target
+	}
+
+	root, err := bp.RealPath("/")
+	if err != nil {
+		return target
+	}
+
+	cleanRoot := filepath.Clean(root)
+	cleanTarget := filepath.Clean(target)
+	if cleanTarget == cleanRoot {
+		return "/"
+	}
+	prefix := cleanRoot + string(filepath.Separator)
+	if !strings.HasPrefix(cleanTarget, prefix) {
+		return target
+	}
+
+	return cleanAbsolute("/" + strings.TrimPrefix(cleanTarget, prefix))
+}
+
+func fileOpError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return fileOpError(pathErr.Err)
+	}
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		return fileOpError(linkErr.Err)
+	}
+	var syscallErr *os.SyscallError
+	if errors.As(err, &syscallErr) {
+		return fileOpError(syscallErr.Err)
+	}
+
+	switch {
+	case errors.Is(err, iofs.ErrNotExist):
+		return "no such file or directory"
+	case errors.Is(err, iofs.ErrExist):
+		return "file exists"
+	case errors.Is(err, iofs.ErrPermission):
+		return "permission denied"
+	case errors.Is(err, syscall.ENOTEMPTY):
+		return "directory not empty"
+	case errors.Is(err, syscall.EISDIR):
+		return "is a directory"
+	case errors.Is(err, syscall.ENOTDIR):
+		return "not a directory"
+	default:
+		return err.Error()
+	}
 }

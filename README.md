@@ -201,7 +201,7 @@ type NetworkConfig struct {
 
 ## Tooling Worklist
 
-- [ ] **Phase 1 — File Operations parity sweep**
+- [x] **Phase 1 — File Operations parity sweep**
   - Commands: `cat`, `cp`, `ls`, `mkdir`, `mv`, `rm`, `rmdir`, `touch`, `ln`, `stat`, `readlink`, `tree`, `file`
   - Focus: path semantics, error messages, overwrite/recursive behaviour, symlink edges.
 

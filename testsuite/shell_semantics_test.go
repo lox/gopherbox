@@ -108,7 +108,7 @@ say
 
 		res, err := runScript(t, shell, `cat missing 2> err.txt; cat err.txt`)
 		assertExec(t, res, err, execExpectation{exitCode: 0})
-		assertOutputContainsAll(t, res.Stdout, "cat: missing: open /home/user/missing: file does not exist")
+		assertOutputContainsAll(t, res.Stdout, "cat: missing: no such file or directory")
 	})
 
 	t.Run("append_redirection", func(t *testing.T) {

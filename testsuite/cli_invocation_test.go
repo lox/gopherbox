@@ -145,6 +145,25 @@ func TestCLIInvocationPhaseParityWithPOSIXSh(t *testing.T) {
 			}, "; "),
 		},
 		{
+			name: "phase1_file_operations_ls_all",
+			script: strings.Join([]string{
+				"mkdir -p work",
+				"cd work",
+				"touch .hidden visible",
+				"ls -a | sort",
+			}, "; "),
+		},
+		{
+			name: "phase1_file_operations_readlink",
+			script: strings.Join([]string{
+				"mkdir -p links",
+				"cd links",
+				"touch target.txt",
+				"ln -s /target.txt link.txt",
+				"readlink link.txt",
+			}, "; "),
+		},
+		{
 			name: "phase2_text_processing",
 			script: strings.Join([]string{
 				"printf 'alpha\\nbeta\\nalpha\\n' > in.txt",

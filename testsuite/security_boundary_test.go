@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,28 @@ func TestSecurityBoundarySuite(t *testing.T) {
 
 		res, err := runScript(t, shell, `echo x > src.txt; ln -s src.txt dst.txt`)
 		assertExec(t, res, err, execExpectation{exitCode: 1, stderrContains: "symbolic links not supported"})
+	})
+
+	t.Run("readwrite_fs_relative_symlink_resolves_from_cwd", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		shell := gb.New(gb.Config{Fs: gb.ReadWriteFs(root), Cwd: "/"})
+
+		res, err := runScript(t, shell, `mkdir -p d; echo hi > d/a; cd d; ln -s a b; cat b`)
+		assertExec(t, res, err, execExpectation{exitCode: 0, stdout: "hi\n"})
+	})
+
+	t.Run("readwrite_fs_errors_do_not_leak_host_paths", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		shell := gb.New(gb.Config{Fs: gb.ReadWriteFs(root), Cwd: "/"})
+
+		res, err := runScript(t, shell, `cat missing; cp missing dst; mkdir -p d/sub; rmdir d`)
+		assertExec(t, res, err, execExpectation{exitCode: 1})
+		assertOutputContainsAll(t, res.Stderr, "cat: missing:", "cp: cannot stat 'missing':", "rmdir: d:")
+		if strings.Contains(res.Stderr, root) {
+			t.Fatalf("stderr leaked host path %q: %q", root, res.Stderr)
+		}
 	})
 
 	t.Run("output_timeout_and_command_limits", func(t *testing.T) {
