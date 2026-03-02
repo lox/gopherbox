@@ -1,3 +1,7 @@
 [tools]
 go = "1.26.0"
 golangci-lint = "latest"
+
+[tasks.install]
+description = "Install gopherbox CLI"
+run = "go install ./cmd/gopherbox"
