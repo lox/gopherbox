@@ -161,7 +161,7 @@ func (i *scriptInstrumenter) instrumentCmd(cmd syntax.Command) error {
 		if err != nil {
 			return err
 		}
-		leaveStmt, err := i.internalStmt(internalFuncLeaveCmd)
+		leaveStmt, err := i.internalStmt(internalFuncLeaveCmd + " $?")
 		if err != nil {
 			return err
 		}
@@ -348,8 +348,27 @@ func (s *Shell) execHandler(cmdCount *atomic.Int64, limits ExecutionLimits, cmds
 		case internalFuncEnterCmd:
 			return limitState.enterFunction()
 		case internalFuncLeaveCmd:
+			if len(args) > 2 {
+				return fmt.Errorf("gopherbox: invalid %s invocation", internalFuncLeaveCmd)
+			}
 			limitState.leaveFunction()
-			return nil
+			if len(args) == 1 {
+				return nil
+			}
+			status, err := strconv.Atoi(args[1])
+			if err != nil {
+				return fmt.Errorf("gopherbox: invalid %s argument: %q", internalFuncLeaveCmd, args[1])
+			}
+			if status <= 0 {
+				if status < 0 {
+					return interp.ExitStatus(1)
+				}
+				return nil
+			}
+			if status > 255 {
+				status = 255
+			}
+			return interp.ExitStatus(uint8(status))
 		}
 
 		if cmdCount.Add(1) > int64(limits.MaxCommandCount) {
@@ -503,6 +522,10 @@ func callHandler(vfs afero.Fs, interpRoot string, limitState *execLimitState) in
 			if info, err := vfs.Stat(virtualTarget); err == nil && info.IsDir() {
 				hostTarget = hostPathForVirtual(interpRoot, virtualTarget)
 				_ = os.MkdirAll(hostTarget, 0o755)
+			} else {
+				if hc, ok := safeHandlerCtx(ctx); ok {
+					_, _ = fmt.Fprintf(hc.Stderr, "cd: %s: no such file or directory\n", target)
+				}
 			}
 
 			out := append([]string(nil), args...)

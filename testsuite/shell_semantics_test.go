@@ -73,6 +73,13 @@ EOF`
 		assertExec(t, res, err, execExpectation{exitCode: 0, stdout: "/\n/home/user\n"})
 	})
 
+	t.Run("cd_missing_path_reports_stderr", func(t *testing.T) {
+		t.Parallel()
+		shell := gb.New(gb.Config{})
+		res, err := runScript(t, shell, `cd /does-not-exist`)
+		assertExec(t, res, err, execExpectation{exitCode: 1, stderrContains: "cd: /does-not-exist:"})
+	})
+
 	t.Run("function_definition_and_invocation", func(t *testing.T) {
 		t.Parallel()
 		shell := gb.New(gb.Config{})
@@ -85,6 +92,14 @@ say
 `
 		res, err := runScript(t, shell, script)
 		assertExec(t, res, err, execExpectation{exitCode: 0, stdout: "hello\n"})
+	})
+
+	t.Run("function_exit_status_propagates", func(t *testing.T) {
+		t.Parallel()
+		shell := gb.New(gb.Config{})
+
+		res, err := runScript(t, shell, `f(){ false; }; f; echo $?`)
+		assertExec(t, res, err, execExpectation{exitCode: 0, stdout: "1\n"})
 	})
 
 	t.Run("stderr_redirection", func(t *testing.T) {

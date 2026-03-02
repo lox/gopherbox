@@ -82,6 +82,8 @@ func New(cfg Config) *Shell {
 	for k, v := range cfg.Env {
 		env[k] = v
 	}
+	home := cleanAbsolute(env["HOME"])
+	env["HOME"] = home
 
 	s := &Shell{
 		fs:      fs,
@@ -97,6 +99,7 @@ func New(cfg Config) *Shell {
 	}
 
 	// Create baseline directory structure for a predictable shell environment.
+	_ = fs.MkdirAll(home, 0o755)
 	_ = fs.MkdirAll(cwd, 0o755)
 
 	for path, content := range cfg.Files {

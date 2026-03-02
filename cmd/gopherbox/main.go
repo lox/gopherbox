@@ -11,6 +11,7 @@ import (
 
 	gb "github.com/buildkite/gopherbox"
 	gcmd "github.com/buildkite/gopherbox/commands"
+	"github.com/spf13/afero"
 )
 
 type cliOptions struct {
@@ -53,6 +54,9 @@ func run(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.
 	applets := gcmd.DefaultCommands()
 
 	if appletName != "gopherbox" {
+		if appletName == "sh" {
+			return runShellApplet(ctx, defaultOptions(), argv[1:], stdout, stderr)
+		}
 		if _, ok := applets[appletName]; ok {
 			return runApplet(ctx, defaultOptions(), appletName, argv[1:], stdin, stdout, stderr)
 		}
@@ -82,6 +86,9 @@ func run(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.
 	}
 
 	cmdName := args[0]
+	if cmdName == "sh" {
+		return runShellApplet(ctx, opts, args[1:], stdout, stderr)
+	}
 	if _, ok := applets[cmdName]; !ok {
 		_, _ = fmt.Fprintf(stderr, "gopherbox: unknown command %q\n", cmdName)
 		return 127
@@ -135,6 +142,40 @@ func runScript(ctx context.Context, opts cliOptions, script string, stdout, stde
 		_, _ = fmt.Fprintf(stderr, "gopherbox: %v\n", err)
 		return 1
 	}
+	return runScriptWithConfig(ctx, cfg, script, stdout, stderr)
+}
+
+func runShellApplet(ctx context.Context, opts cliOptions, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(stderr, "gopherbox sh: interactive mode is not supported; use 'sh -c <script>' or 'sh <script-file>'")
+		return 2
+	}
+
+	if args[0] == "-c" {
+		if len(args) < 2 {
+			_, _ = fmt.Fprintln(stderr, "gopherbox sh: -c requires a script argument")
+			return 2
+		}
+		return runScript(ctx, opts, args[1], stdout, stderr)
+	}
+
+	cfg, err := buildConfig(opts)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "gopherbox: %v\n", err)
+		return 1
+	}
+
+	scriptPath := resolveCLIPath(cfg.Cwd, args[0])
+	scriptBytes, err := afero.ReadFile(cfg.Fs, scriptPath)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "gopherbox sh: %s: %v\n", args[0], err)
+		return 1
+	}
+
+	return runScriptWithConfig(ctx, cfg, string(scriptBytes), stdout, stderr)
+}
+
+func runScriptWithConfig(ctx context.Context, cfg gb.Config, script string, stdout, stderr io.Writer) int {
 
 	shell := gb.New(cfg)
 	res, err := shell.Exec(ctx, script)
@@ -146,6 +187,16 @@ func runScript(ctx context.Context, opts cliOptions, script string, stdout, stde
 	_, _ = io.WriteString(stdout, res.Stdout)
 	_, _ = io.WriteString(stderr, res.Stderr)
 	return clampExitCode(res.ExitCode)
+}
+
+func resolveCLIPath(cwd, p string) string {
+	if p == "" {
+		return filepath.Clean(cwd)
+	}
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Clean(filepath.Join(cwd, p))
 }
 
 func runApplet(ctx context.Context, opts cliOptions, cmdName string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {

@@ -250,6 +250,9 @@ You can run gopherbox as a standalone CLI:
 # Run a script
 go run ./cmd/gopherbox -c 'echo hello; pwd'
 
+# BusyBox-style shell applet mode
+go run ./cmd/gopherbox sh -c 'echo hello from sh mode'
+
 # BusyBox-style command invocation
 go run ./cmd/gopherbox --root . cat README.md
 
@@ -257,7 +260,7 @@ go run ./cmd/gopherbox --root . cat README.md
 go run ./cmd/gopherbox --root . --rw touch created-on-disk.txt
 ```
 
-The CLI supports BusyBox-style multicall behaviour. If the binary is invoked via a symlink named after a built-in command, that command is executed directly.
+The CLI supports BusyBox-style multicall behaviour. If the binary is invoked via a symlink named after a built-in command, that command is executed directly. `sh` command mode is also supported for non-interactive `-c` and script-file execution.
 
 ## What's Out of Scope (v1)
 
