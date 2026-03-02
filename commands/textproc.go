@@ -393,12 +393,8 @@ func cmdWc(_ context.Context, args []string, ioCtx CommandIO) int {
 	}
 
 	inputs, readExit := readNamedInputs(files, ioCtx)
-	for _, in := range inputs {
-		lines := strings.Count(string(in.data), "\n")
-		words := len(strings.Fields(string(in.data)))
-		bytesCount := len(in.data)
-
-		parts := []string{}
+	formatCounts := func(lines, words, bytesCount int) []string {
+		parts := make([]string, 0, 3)
 		if countLines {
 			parts = append(parts, fmt.Sprintf("%d", lines))
 		}
@@ -408,9 +404,34 @@ func cmdWc(_ context.Context, args []string, ioCtx CommandIO) int {
 		if countBytes {
 			parts = append(parts, fmt.Sprintf("%d", bytesCount))
 		}
-		parts = append(parts, in.name)
+		return parts
+	}
+
+	showName := len(files) > 0
+	totalLines := 0
+	totalWords := 0
+	totalBytes := 0
+	for _, in := range inputs {
+		lines := strings.Count(string(in.data), "\n")
+		words := len(strings.Fields(string(in.data)))
+		bytesCount := len(in.data)
+		totalLines += lines
+		totalWords += words
+		totalBytes += bytesCount
+
+		parts := formatCounts(lines, words, bytesCount)
+		if showName {
+			parts = append(parts, in.name)
+		}
 		_, _ = fmt.Fprintln(ioCtx.Stdout, strings.Join(parts, " "))
 	}
+
+	if showName && len(inputs) > 1 {
+		parts := formatCounts(totalLines, totalWords, totalBytes)
+		parts = append(parts, "total")
+		_, _ = fmt.Fprintln(ioCtx.Stdout, strings.Join(parts, " "))
+	}
+
 	return readExit
 }
 

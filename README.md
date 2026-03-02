@@ -193,22 +193,38 @@ type NetworkConfig struct {
 }
 ```
 
-## Command Coverage
+## Compatibility Targets
 
-### Phase 1 — File Operations
-`cat`, `cp`, `ls`, `mkdir`, `mv`, `rm`, `rmdir`, `touch`, `ln`, `stat`, `readlink`, `tree`, `file`
+- **Primary target**: POSIX shell semantics (via `mvdan/sh`) plus a BusyBox-style tool contract for built-in commands.
+- **Secondary reference**: `/bin/sh` behaviour for script semantics and exit-status behaviour in CI parity tests.
+- **Non-goals by default**: exact BSD (macOS) flag parity and full GNU coreutils flag parity unless a concrete agent workflow requires it.
 
-### Phase 2 — Text Processing
-`grep` (+ `egrep`, `fgrep`), `sed`, `head`, `tail`, `sort`, `uniq`, `wc`, `cut`, `tr`, `rev`, `tac`, `paste`, `fold`, `nl`, `expand`, `unexpand`, `column`, `comm`, `join`, `diff`, `strings`
+## Tooling Worklist
 
-### Phase 3 — Data & Search
-`awk`, `find`, `xargs`, `jq`, `base64`, `md5sum`, `sha1sum`, `sha256sum`
+- [ ] **Phase 1 — File Operations parity sweep**
+  - Commands: `cat`, `cp`, `ls`, `mkdir`, `mv`, `rm`, `rmdir`, `touch`, `ln`, `stat`, `readlink`, `tree`, `file`
+  - Focus: path semantics, error messages, overwrite/recursive behaviour, symlink edges.
 
-### Phase 4 — Archives & Network
-`tar`, `gzip`/`gunzip`/`zcat`, `curl` (with allowlist)
+- [ ] **Phase 2 — Text Processing parity sweep**
+  - Commands: `grep` (+ `egrep`, `fgrep`), `sed`, `head`, `tail`, `sort`, `uniq`, `wc`, `cut`, `tr`, `rev`, `tac`, `paste`, `fold`, `nl`, `expand`, `unexpand`, `column`, `comm`, `join`, `diff`, `strings`
+  - Focus: option handling, stdin/file precedence, exit-status fidelity for no-match/partial-match cases.
 
-### Phase 5 — Shell Utilities
-`echo`, `printf`, `env`, `export`, `printenv`, `pwd`, `cd`, `basename`, `dirname`, `du`, `date`, `seq`, `sleep`, `expr`, `true`, `false`, `which`, `whoami`, `hostname`, `tee`, `chmod`, `time`, `timeout`
+- [ ] **Phase 3 — Data & Search parity sweep**
+  - Commands: `awk`, `find`, `xargs`, `jq`, `base64`, `md5sum`, `sha1sum`, `sha256sum`
+  - Focus: expression compatibility, traversal behaviour, tokenisation/quoting with `xargs`, deterministic hash output format.
+
+- [ ] **Phase 4 — Archives & Network parity sweep**
+  - Commands: `tar`, `gzip`/`gunzip`/`zcat`, `curl` (with allowlist)
+  - Focus: archive round-trips, compression flags, HTTP method restrictions, URL allowlist diagnostics.
+
+- [ ] **Phase 5 — Shell Utility parity sweep**
+  - Commands: `echo`, `printf`, `env`, `export`, `printenv`, `pwd`, `cd`, `basename`, `dirname`, `du`, `date`, `seq`, `sleep`, `expr`, `true`, `false`, `which`, `whoami`, `hostname`, `tee`, `chmod`, `time`, `timeout`
+  - Focus: shell integration (`$?`, environment mutation, cwd transitions), timing/timeout semantics, option compatibility.
+
+- [ ] **Cross-phase completion criteria**
+  - [x] Add process-level CLI parity tests (`gopherbox` vs `/bin/sh`) for representative workflows in each phase.
+  - [ ] Document intentional deviations from BusyBox/POSIX in README as explicit compatibility notes.
+  - [x] Keep `go test ./...` and `go test -race ./...` green with new parity coverage.
 
 ## Standalone Usage
 

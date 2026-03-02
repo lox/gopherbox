@@ -3,9 +3,12 @@ package testsuite
 import (
 	"bytes"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +59,27 @@ func runPOSIXSh(t *testing.T, cwd, script string) cliRunResult {
 	return runProcess(t, cwd, "/bin/sh", "-c", script)
 }
 
+func assertCLIParityWithPOSIXSh(t *testing.T, bin, script string, gopherboxArgs ...string) {
+	t.Helper()
+
+	gopherboxRoot := t.TempDir()
+	shRoot := t.TempDir()
+
+	args := []string{"--root", gopherboxRoot, "--rw"}
+	args = append(args, gopherboxArgs...)
+	args = append(args, "-c", script)
+
+	got := runProcess(t, gopherboxRoot, bin, args...)
+	want := runPOSIXSh(t, shRoot, script)
+
+	if got.exitCode != want.exitCode {
+		t.Fatalf("exit code mismatch: got %d want %d (g.stderr=%q s.stderr=%q)", got.exitCode, want.exitCode, got.stderr, want.stderr)
+	}
+	if got.stdout != want.stdout {
+		t.Fatalf("stdout mismatch: got %q want %q", got.stdout, want.stdout)
+	}
+}
+
 func TestCLIInvocationShellCommandMode(t *testing.T) {
 	t.Parallel()
 	bin := buildCLI(t)
@@ -88,16 +112,98 @@ func TestCLIInvocationParitySubsetWithPOSIXSh(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			cwd := t.TempDir()
-			got := runProcess(t, cwd, bin, "-c", tc.script)
-			want := runPOSIXSh(t, cwd, tc.script)
+			assertCLIParityWithPOSIXSh(t, bin, tc.script)
+		})
+	}
+}
 
-			if got.exitCode != want.exitCode {
-				t.Fatalf("exit code mismatch: got %d want %d (g.stderr=%q s.stderr=%q)", got.exitCode, want.exitCode, got.stderr, want.stderr)
-			}
-			if got.stdout != want.stdout {
-				t.Fatalf("stdout mismatch: got %q want %q", got.stdout, want.stdout)
-			}
+func TestCLIInvocationPhaseParityWithPOSIXSh(t *testing.T) {
+	t.Parallel()
+	bin := buildCLI(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	cases := []struct {
+		name         string
+		script       string
+		gopherboxArg []string
+	}{
+		{
+			name: "phase1_file_operations",
+			script: strings.Join([]string{
+				"mkdir -p docs/sub",
+				"echo alpha > docs/sub/a.txt",
+				"cp docs/sub/a.txt docs/sub/b.txt",
+				"mv docs/sub/b.txt docs/c.txt",
+				"ln docs/c.txt docs/link.txt",
+				"rm docs/sub/a.txt",
+				"cat docs/link.txt",
+				"ls docs | sort",
+			}, "; "),
+		},
+		{
+			name: "phase2_text_processing",
+			script: strings.Join([]string{
+				"printf 'alpha\\nbeta\\nalpha\\n' > in.txt",
+				"grep alpha in.txt | wc -l | awk '{print $1 \":\" $2}'",
+				"printf 'b\\na\\na\\n' > sort.txt",
+				"sort sort.txt | uniq -c | awk '{print $1 \":\" $2}'",
+				"printf 'a,b,c\\n' | cut -d , -f 2 | tr b B | rev",
+			}, "; "),
+		},
+		{
+			name: "phase3_data_and_search",
+			script: strings.Join([]string{
+				"printf '1 2\\n3 4\\n' | awk '{print $1 + $2}'",
+				"mkdir -p d/sub",
+				"echo x > d/a.txt",
+				"echo y > d/sub/b.txt",
+				"find d -name '*.txt' | sort",
+				"printf 'a b c d' | xargs -n 2 echo item",
+				"printf 'hello' | base64 | base64 -d",
+				"echo",
+			}, "; "),
+		},
+		{
+			name: "phase4_archive_and_network",
+			script: strings.Join([]string{
+				"mkdir -p arch",
+				"echo hello > arch/file.txt",
+				"tar -cf out.tar arch",
+				"rm -r arch",
+				"tar -xf out.tar",
+				"cat arch/file.txt",
+				"printf 'zipme\\n' > z.txt",
+				"gzip z.txt",
+				"gunzip z.txt.gz",
+				"cat z.txt",
+				"curl " + server.URL,
+			}, "; "),
+			gopherboxArg: []string{"--allow-url-prefix", server.URL},
+		},
+		{
+			name: "phase5_shell_utilities",
+			script: strings.Join([]string{
+				"env NAME=agent printenv NAME",
+				"basename /a/b/c.txt",
+				"dirname /a/b/c.txt",
+				"seq 3",
+				"expr 2 + 3",
+				"echo hi | tee out.txt >/dev/null",
+				"cat out.txt",
+				"true && echo true-ok",
+				"false || echo false-ok",
+			}, "; "),
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			assertCLIParityWithPOSIXSh(t, bin, tc.script, tc.gopherboxArg...)
 		})
 	}
 }
