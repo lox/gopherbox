@@ -42,3 +42,13 @@ func (n *NetworkConfig) urlAllowed(url string) bool {
 	}
 	return false
 }
+
+// MethodAllowed reports whether an HTTP method is permitted by this network policy.
+func (n *NetworkConfig) MethodAllowed(method string) bool {
+	return n.methodAllowed(method)
+}
+
+// URLAllowed reports whether a URL is permitted by this network policy.
+func (n *NetworkConfig) URLAllowed(url string) bool {
+	return n.urlAllowed(url)
+}

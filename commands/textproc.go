@@ -1,4 +1,4 @@
-package gopherbox
+package commands
 
 import (
 	"bytes"

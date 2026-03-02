@@ -1,4 +1,4 @@
-package gopherbox
+package commands
 
 import (
 	"archive/tar"
@@ -399,11 +399,11 @@ func cmdCurl(ctx context.Context, args []string, ioCtx CommandIO) int {
 		writeErrf(ioCtx, "curl: no URL specified\n")
 		return 2
 	}
-	if !ioCtx.Network.urlAllowed(url) {
+	if !ioCtx.Network.URLAllowed(url) {
 		writeErrf(ioCtx, "curl: URL not allowed: %s\n", url)
 		return 1
 	}
-	if !ioCtx.Network.methodAllowed(method) {
+	if !ioCtx.Network.MethodAllowed(method) {
 		writeErrf(ioCtx, "curl: method not allowed: %s\n", method)
 		return 1
 	}

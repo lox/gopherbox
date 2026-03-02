@@ -7,34 +7,198 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
+	gcmd "github.com/buildkite/gopherbox/commands"
 	"github.com/spf13/afero"
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
 )
 
-type execState struct {
-	mu  sync.RWMutex
-	cwd string
+const (
+	internalLoopIterCmd  = "__gopherbox_loop_iter"
+	internalFuncEnterCmd = "__gopherbox_func_enter"
+	internalFuncLeaveCmd = "__gopherbox_func_leave"
+)
+
+type execLimitState struct {
+	mu           sync.Mutex
+	maxLoopIter  int
+	maxCallDepth int
+	loopCounts   map[int]int
+	callDepth    int
 }
 
-func (s *execState) cwdValue() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.cwd == "" {
-		return "/"
+func newExecLimitState(limits ExecutionLimits) *execLimitState {
+	return &execLimitState{
+		maxLoopIter:  limits.MaxLoopIter,
+		maxCallDepth: limits.MaxCallDepth,
+		loopCounts:   map[int]int{},
 	}
-	return s.cwd
 }
 
-func (s *execState) setCwd(cwd string) {
+func (s *execLimitState) recordLoopIter(loopID int) error {
 	s.mu.Lock()
-	s.cwd = cleanAbsolute(cwd)
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	s.loopCounts[loopID]++
+	if s.loopCounts[loopID] > s.maxLoopIter {
+		return ErrLoopLimitExceeded
+	}
+	return nil
+}
+
+func (s *execLimitState) enterFunction() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callDepth++
+	if s.callDepth > s.maxCallDepth {
+		return ErrCallDepthExceeded
+	}
+	return nil
+}
+
+func (s *execLimitState) leaveFunction() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.callDepth > 0 {
+		s.callDepth--
+	}
+}
+
+type scriptInstrumenter struct {
+	parser     *syntax.Parser
+	nextLoopID int
+}
+
+func newScriptInstrumenter() *scriptInstrumenter {
+	return &scriptInstrumenter{parser: syntax.NewParser(syntax.Variant(syntax.LangBash))}
+}
+
+func (i *scriptInstrumenter) instrument(file *syntax.File) error {
+	return i.instrumentStmts(file.Stmts)
+}
+
+func (i *scriptInstrumenter) instrumentStmts(stmts []*syntax.Stmt) error {
+	for _, stmt := range stmts {
+		if err := i.instrumentStmt(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (i *scriptInstrumenter) instrumentStmt(stmt *syntax.Stmt) error {
+	if stmt == nil || stmt.Cmd == nil {
+		return nil
+	}
+	return i.instrumentCmd(stmt.Cmd)
+}
+
+func (i *scriptInstrumenter) instrumentCmd(cmd syntax.Command) error {
+	switch c := cmd.(type) {
+	case *syntax.Block:
+		return i.instrumentStmts(c.Stmts)
+	case *syntax.Subshell:
+		return i.instrumentStmts(c.Stmts)
+	case *syntax.IfClause:
+		return i.instrumentIfClause(c)
+	case *syntax.WhileClause:
+		if err := i.instrumentStmts(c.Cond); err != nil {
+			return err
+		}
+		if err := i.instrumentStmts(c.Do); err != nil {
+			return err
+		}
+		i.nextLoopID++
+		loopStmt, err := i.internalStmt(fmt.Sprintf("%s %d", internalLoopIterCmd, i.nextLoopID))
+		if err != nil {
+			return err
+		}
+		c.Do = append([]*syntax.Stmt{loopStmt}, c.Do...)
+		return nil
+	case *syntax.ForClause:
+		if err := i.instrumentStmts(c.Do); err != nil {
+			return err
+		}
+		i.nextLoopID++
+		loopStmt, err := i.internalStmt(fmt.Sprintf("%s %d", internalLoopIterCmd, i.nextLoopID))
+		if err != nil {
+			return err
+		}
+		c.Do = append([]*syntax.Stmt{loopStmt}, c.Do...)
+		return nil
+	case *syntax.CaseClause:
+		for _, item := range c.Items {
+			if err := i.instrumentStmts(item.Stmts); err != nil {
+				return err
+			}
+		}
+		return nil
+	case *syntax.BinaryCmd:
+		if err := i.instrumentStmt(c.X); err != nil {
+			return err
+		}
+		return i.instrumentStmt(c.Y)
+	case *syntax.TimeClause:
+		return i.instrumentStmt(c.Stmt)
+	case *syntax.CoprocClause:
+		return i.instrumentStmt(c.Stmt)
+	case *syntax.FuncDecl:
+		body := c.Body
+		if body == nil {
+			body = &syntax.Stmt{Cmd: &syntax.Block{}}
+		}
+		if err := i.instrumentStmt(body); err != nil {
+			return err
+		}
+		enterStmt, err := i.internalStmt(internalFuncEnterCmd)
+		if err != nil {
+			return err
+		}
+		leaveStmt, err := i.internalStmt(internalFuncLeaveCmd)
+		if err != nil {
+			return err
+		}
+		c.Body = &syntax.Stmt{
+			Position: body.Position,
+			Cmd: &syntax.Block{
+				Stmts: []*syntax.Stmt{enterStmt, body, leaveStmt},
+			},
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+func (i *scriptInstrumenter) instrumentIfClause(clause *syntax.IfClause) error {
+	if clause == nil {
+		return nil
+	}
+	if err := i.instrumentStmts(clause.Cond); err != nil {
+		return err
+	}
+	if err := i.instrumentStmts(clause.Then); err != nil {
+		return err
+	}
+	return i.instrumentIfClause(clause.Else)
+}
+
+func (i *scriptInstrumenter) internalStmt(command string) (*syntax.Stmt, error) {
+	file, err := i.parser.Parse(bytes.NewBufferString(command+"\n"), "gopherbox-internal")
+	if err != nil {
+		return nil, err
+	}
+	if len(file.Stmts) != 1 || file.Stmts[0] == nil {
+		return nil, fmt.Errorf("gopherbox: internal command parse failed: %q", command)
+	}
+	return file.Stmts[0], nil
 }
 
 // ExecWith runs a shell script with per-call overrides.
@@ -58,31 +222,12 @@ func (s *Shell) ExecWith(ctx context.Context, script string, overrides ExecOptio
 	}
 	env["PWD"] = cwd
 
-	state := &execState{cwd: cwd}
-
-	cmds := make(map[string]CommandFunc, len(s.cmds)+2)
+	cmds := make(map[string]CommandFunc, len(s.cmds)+1)
 	for name, fn := range s.cmds {
 		cmds[name] = fn
 	}
-	cmds["__gopherbox_cd"] = func(_ context.Context, args []string, ioCtx CommandIO) int {
-		target := ioCtx.Env["HOME"]
-		if target == "" {
-			target = "/"
-		}
-		if len(args) > 0 {
-			target = args[0]
-		}
-		abs := resolvePath(state.cwdValue(), target)
-		entry, err := ioCtx.Fs.Stat(abs)
-		if err != nil || !entry.IsDir() {
-			writeErrf(ioCtx, "cd: %s: no such directory\n", target)
-			return 1
-		}
-		state.setCwd(abs)
-		return 0
-	}
 	cmds["__gopherbox_pwd"] = func(_ context.Context, _ []string, ioCtx CommandIO) int {
-		_, _ = fmt.Fprintln(ioCtx.Stdout, state.cwdValue())
+		_, _ = fmt.Fprintln(ioCtx.Stdout, ioCtx.Cwd)
 		return 0
 	}
 
@@ -99,23 +244,40 @@ func (s *Shell) ExecWith(ctx context.Context, script string, overrides ExecOptio
 		pairs = append(pairs, fmt.Sprintf("%s=%s", k, env[k]))
 	}
 
-	var cmdCount atomic.Int64
-	runner, err := interp.New(
-		interp.Env(expand.ListEnviron(pairs...)),
-		interp.Dir("/"),
-		interp.StdIO(bytes.NewReader(nil), stdout, stderr),
-		interp.CallHandler(callHandler()),
-		interp.ExecHandler(s.execHandler(&cmdCount, limits, cmds, state)),
-		interp.OpenHandler(s.openHandler(state)),
-		interp.ReadDirHandler2(s.readDirHandler(state)),
-		interp.StatHandler(s.statHandler(state)),
-	)
+	parser := syntax.NewParser(syntax.Variant(syntax.LangBash))
+	file, err := parser.Parse(bytes.NewBufferString(script), "gopherbox")
 	if err != nil {
 		return nil, err
 	}
+	instrumenter := newScriptInstrumenter()
+	if err := instrumenter.instrument(file); err != nil {
+		return nil, err
+	}
 
-	parser := syntax.NewParser(syntax.Variant(syntax.LangBash))
-	file, err := parser.Parse(bytes.NewBufferString(script), "gopherbox")
+	limitState := newExecLimitState(limits)
+
+	interpRoot, err := os.MkdirTemp("", "gopherbox-interp-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(interpRoot)
+
+	interpDir := hostPathForVirtual(interpRoot, cwd)
+	if err := os.MkdirAll(interpDir, 0o755); err != nil {
+		return nil, err
+	}
+
+	var cmdCount atomic.Int64
+	runner, err := interp.New(
+		interp.Env(expand.ListEnviron(pairs...)),
+		interp.Dir(interpDir),
+		interp.StdIO(bytes.NewReader(nil), stdout, stderr),
+		interp.CallHandler(callHandler(s.fs, interpRoot, limitState)),
+		interp.ExecHandler(s.execHandler(&cmdCount, limits, cmds, interpRoot, limitState)),
+		interp.OpenHandler(s.openHandler(interpRoot)),
+		interp.ReadDirHandler2(s.readDirHandler(interpRoot)),
+		interp.StatHandler(s.statHandler(interpRoot)),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -136,6 +298,12 @@ func (s *Shell) ExecWith(ctx context.Context, script string, overrides ExecOptio
 	}
 	if errors.Is(runErr, ErrCommandLimitExceeded) {
 		return nil, ErrCommandLimitExceeded
+	}
+	if errors.Is(runErr, ErrLoopLimitExceeded) {
+		return nil, ErrLoopLimitExceeded
+	}
+	if errors.Is(runErr, ErrCallDepthExceeded) {
+		return nil, ErrCallDepthExceeded
 	}
 
 	result := &Result{
@@ -161,11 +329,29 @@ func (s *Shell) ExecWith(ctx context.Context, script string, overrides ExecOptio
 	return result, nil
 }
 
-func (s *Shell) execHandler(cmdCount *atomic.Int64, limits ExecutionLimits, cmds map[string]CommandFunc, state *execState) interp.ExecHandlerFunc {
+func (s *Shell) execHandler(cmdCount *atomic.Int64, limits ExecutionLimits, cmds map[string]CommandFunc, interpRoot string, limitState *execLimitState) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		if len(args) == 0 {
 			return nil
 		}
+
+		switch args[0] {
+		case internalLoopIterCmd:
+			if len(args) != 2 {
+				return fmt.Errorf("gopherbox: invalid %s invocation", internalLoopIterCmd)
+			}
+			loopID, err := strconv.Atoi(args[1])
+			if err != nil {
+				return fmt.Errorf("gopherbox: invalid %s argument: %q", internalLoopIterCmd, args[1])
+			}
+			return limitState.recordLoopIter(loopID)
+		case internalFuncEnterCmd:
+			return limitState.enterFunction()
+		case internalFuncLeaveCmd:
+			limitState.leaveFunction()
+			return nil
+		}
+
 		if cmdCount.Add(1) > int64(limits.MaxCommandCount) {
 			return ErrCommandLimitExceeded
 		}
@@ -182,8 +368,14 @@ func (s *Shell) execHandler(cmdCount *atomic.Int64, limits ExecutionLimits, cmds
 			return interp.ExitStatus(127)
 		}
 
+		cwd := virtualCwd(ctx, interpRoot)
 		envMap := environToMap(hc.Env)
-		envMap["PWD"] = state.cwdValue()
+		envMap["PWD"] = cwd
+
+		var network gcmd.NetworkPolicy
+		if s.network != nil {
+			network = s.network
+		}
 
 		commandIO := CommandIO{
 			Stdin:   hc.Stdin,
@@ -191,8 +383,8 @@ func (s *Shell) execHandler(cmdCount *atomic.Int64, limits ExecutionLimits, cmds
 			Stderr:  hc.Stderr,
 			Fs:      s.fs,
 			Env:     envMap,
-			Cwd:     state.cwdValue(),
-			Network: s.network,
+			Cwd:     cwd,
+			Network: network,
 			Cmds:    cmds,
 		}
 
@@ -210,15 +402,12 @@ func (s *Shell) execHandler(cmdCount *atomic.Int64, limits ExecutionLimits, cmds
 	}
 }
 
-func (s *Shell) openHandler(state *execState) interp.OpenHandlerFunc {
-	return func(_ context.Context, path string, flag int, perm fs.FileMode) (io.ReadWriteCloser, error) {
-		abs := path
+func (s *Shell) openHandler(interpRoot string) interp.OpenHandlerFunc {
+	return func(ctx context.Context, path string, flag int, perm fs.FileMode) (io.ReadWriteCloser, error) {
 		if path == "/dev/null" {
 			return devNullFile{}, nil
 		}
-		if !filepath.IsAbs(path) {
-			abs = resolvePath(state.cwdValue(), path)
-		}
+		abs := resolveExecutionPath(ctx, path, interpRoot)
 		f, err := s.fs.OpenFile(abs, flag, perm)
 		if err != nil {
 			return nil, err
@@ -227,12 +416,9 @@ func (s *Shell) openHandler(state *execState) interp.OpenHandlerFunc {
 	}
 }
 
-func (s *Shell) readDirHandler(state *execState) interp.ReadDirHandlerFunc2 {
-	return func(_ context.Context, path string) ([]fs.DirEntry, error) {
-		abs := path
-		if !filepath.IsAbs(path) {
-			abs = resolvePath(state.cwdValue(), path)
-		}
+func (s *Shell) readDirHandler(interpRoot string) interp.ReadDirHandlerFunc2 {
+	return func(ctx context.Context, path string) ([]fs.DirEntry, error) {
+		abs := resolveExecutionPath(ctx, path, interpRoot)
 		infos, err := afero.ReadDir(s.fs, abs)
 		if err != nil {
 			return nil, err
@@ -245,12 +431,9 @@ func (s *Shell) readDirHandler(state *execState) interp.ReadDirHandlerFunc2 {
 	}
 }
 
-func (s *Shell) statHandler(state *execState) interp.StatHandlerFunc {
-	return func(_ context.Context, name string, followSymlinks bool) (fs.FileInfo, error) {
-		abs := name
-		if !filepath.IsAbs(name) {
-			abs = resolvePath(state.cwdValue(), name)
-		}
+func (s *Shell) statHandler(interpRoot string) interp.StatHandlerFunc {
+	return func(ctx context.Context, name string, followSymlinks bool) (fs.FileInfo, error) {
+		abs := resolveExecutionPath(ctx, name, interpRoot)
 		if followSymlinks {
 			return s.fs.Stat(abs)
 		}
@@ -262,20 +445,105 @@ func (s *Shell) statHandler(state *execState) interp.StatHandlerFunc {
 	}
 }
 
-func callHandler() interp.CallHandlerFunc {
-	return func(_ context.Context, args []string) ([]string, error) {
+func mapInterpPath(path, interpRoot string) (string, bool) {
+	if !filepath.IsAbs(path) {
+		return "", false
+	}
+	base := filepath.Clean(interpRoot)
+	if base == "/" {
+		return "", false
+	}
+	rel, err := filepath.Rel(base, filepath.Clean(path))
+	if err != nil {
+		return "", false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	if rel == "." {
+		return "/", true
+	}
+	return cleanAbsolute(filepath.Join("/", rel)), true
+}
+
+func hostPathForVirtual(interpRoot, virtualPath string) string {
+	virtualPath = cleanAbsolute(virtualPath)
+	if virtualPath == "/" {
+		return interpRoot
+	}
+	return filepath.Join(interpRoot, strings.TrimPrefix(virtualPath, "/"))
+}
+
+func callHandler(vfs afero.Fs, interpRoot string, limitState *execLimitState) interp.CallHandlerFunc {
+	return func(ctx context.Context, args []string) ([]string, error) {
 		if len(args) == 0 {
 			return args, nil
 		}
 		switch args[0] {
-		case "cd", "pwd":
+		case "cd":
+			cwd := virtualCwd(ctx, interpRoot)
+			env := map[string]string{}
+			if hc, ok := safeHandlerCtx(ctx); ok {
+				env = environToMap(hc.Env)
+			}
+
+			target := env["HOME"]
+			if target == "" {
+				target = "/"
+			}
+			if len(args) > 1 {
+				target = args[1]
+			}
+			if target == "-" {
+				return args, nil
+			}
+
+			virtualTarget := resolvePath(cwd, target)
+			hostTarget := filepath.Join(interpRoot, ".missing")
+			if info, err := vfs.Stat(virtualTarget); err == nil && info.IsDir() {
+				hostTarget = hostPathForVirtual(interpRoot, virtualTarget)
+				_ = os.MkdirAll(hostTarget, 0o755)
+			}
+
+			out := append([]string(nil), args...)
+			if len(out) > 1 {
+				out[1] = hostTarget
+			} else {
+				out = append(out, hostTarget)
+			}
+			return out, nil
+		case "pwd":
 			out := append([]string(nil), args...)
 			out[0] = "__gopherbox_" + args[0]
 			return out, nil
+		case "return":
+			limitState.leaveFunction()
+			return args, nil
 		default:
 			return args, nil
 		}
 	}
+}
+
+func virtualCwd(ctx context.Context, interpRoot string) string {
+	hc, ok := safeHandlerCtx(ctx)
+	if !ok {
+		return "/"
+	}
+	if mapped, ok := mapInterpPath(hc.Dir, interpRoot); ok {
+		return mapped
+	}
+	return cleanAbsolute(hc.Dir)
+}
+
+func resolveExecutionPath(ctx context.Context, path, interpRoot string) string {
+	if mapped, ok := mapInterpPath(path, interpRoot); ok {
+		return mapped
+	}
+	if filepath.IsAbs(path) {
+		return cleanAbsolute(path)
+	}
+	return resolvePath(virtualCwd(ctx, interpRoot), path)
 }
 
 func safeHandlerCtx(ctx context.Context) (_ interp.HandlerContext, ok bool) {

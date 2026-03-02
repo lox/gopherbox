@@ -2,12 +2,12 @@ package gopherbox
 
 import (
 	"context"
-	"io"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 
+	gcmd "github.com/buildkite/gopherbox/commands"
 	"github.com/spf13/afero"
 )
 
@@ -60,19 +60,10 @@ type ExecOptions struct {
 }
 
 // CommandFunc is the signature for a gopherbox command.
-type CommandFunc func(ctx context.Context, args []string, io CommandIO) int
+type CommandFunc = gcmd.CommandFunc
 
 // CommandIO provides the command's I/O context.
-type CommandIO struct {
-	Stdin   io.Reader
-	Stdout  io.Writer
-	Stderr  io.Writer
-	Fs      afero.Fs
-	Env     map[string]string
-	Cwd     string
-	Network *NetworkConfig
-	Cmds    map[string]CommandFunc
-}
+type CommandIO = gcmd.CommandIO
 
 // New creates a sandboxed shell environment.
 func New(cfg Config) *Shell {

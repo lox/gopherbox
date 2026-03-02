@@ -19,17 +19,16 @@ gopherbox provides a bash-compatible shell where:
 - Core public API is implemented: `New`, `Exec`, `ExecWith`, persistent filesystem state, and per-call env/cwd overrides.
 - `mvdan.cc/sh/v3` integration is in place with custom execution and filesystem handlers for command dispatch and VFS-backed file access.
 - Filesystem modes are implemented via `afero`: in-memory (`InMemoryFs`), copy-on-write overlay (`OverlayFs`), and jailed read/write (`ReadWriteFs`).
-- Runtime safety controls are implemented for timeout, max command count, and max output size.
+- Runtime safety controls are implemented for timeout, max command count, max output size, loop iteration limits, and function call depth limits.
 - Network access is implemented as opt-in via `curl`, with URL prefix and HTTP method allowlisting.
 - Command set from all planned phases is scaffolded and wired into the registry, with practical behaviour for common agent workflows.
 - Automated tests cover API behaviour, persistence semantics, limits, VFS modes, custom commands, and network allowlist behaviour.
 
 ### Planned Next
 
-- Enforce `MaxLoopIter` and `MaxCallDepth` limits (currently defined in config but not yet enforced at interpreter level).
 - Tighten command compatibility and edge-case behaviour to better match POSIX/coreutils semantics.
 - Expand command option coverage and improve error message fidelity for complex scripts.
-- Continue hardening and profiling for larger scripts and higher-concurrency harness usage.
+- Continue hardening and profiling for larger scripts and higher-concurrency workloads.
 
 ## Key Dependencies
 
@@ -63,22 +62,19 @@ These compose to create the same filesystem modes as just-bash:
 gopherbox/
 ├── gopherbox.go       # Public API: Shell struct, Exec(), configuration
 ├── vfs.go             # VFS setup, filesystem mode helpers
-├── commands.go        # Command registry and dispatch
+├── commands.go        # Root command registry bridge
 ├── exec.go            # ExecHandler integration with mvdan/sh interp
 ├── limits.go          # Execution limits (loops, recursion, timeout)
 ├── network.go         # Optional curl with URL allowlist
-├── cmd/               # Individual command implementations
+├── commands/          # Built-in command package and implementations
+│   ├── commands.go    # Command package types + built-in registry
 │   ├── fileops.go     # cat, cp, mv, rm, mkdir, touch, ln, ls, stat, rmdir, tree
 │   ├── textproc.go    # grep, sed, head, tail, sort, uniq, wc, cut, tr, rev
-│   ├── awk.go         # awk (complex enough to warrant its own file)
-│   ├── find.go        # find
-│   ├── xargs.go       # xargs
-│   ├── jq.go          # jq (JSON processing)
-│   ├── archive.go     # tar, gzip/gunzip
-│   ├── hash.go        # md5sum, sha1sum, sha256sum
-│   ├── env.go         # echo, printf, env, export, pwd, cd, basename, dirname
-│   ├── misc.go        # date, seq, sleep, true, false, which, whoami, expr
-│   └── curl.go        # curl with network allowlist enforcement
+│   ├── data.go        # awk, find, xargs, jq, base64, md5sum/sha1sum/sha256sum
+│   ├── archive.go     # tar, gzip/gunzip/zcat, curl
+│   └── misc.go        # echo, printf, env, pwd, cd, du, date, seq, sleep, expr, etc.
+├── cmd/gopherbox/     # CLI entrypoint (BusyBox-style multicall + script mode)
+│   └── main.go
 └── gopherbox_test.go  # Tests
 ```
 
@@ -245,6 +241,23 @@ func main() {
     fmt.Printf("stderr=%q\n", result.Stderr)
 }
 ```
+
+## CLI Usage
+
+You can run gopherbox as a standalone CLI:
+
+```bash
+# Run a script
+go run ./cmd/gopherbox -c 'echo hello; pwd'
+
+# BusyBox-style command invocation
+go run ./cmd/gopherbox --root . cat README.md
+
+# Writes are overlay by default (in-memory); use --rw to write through
+go run ./cmd/gopherbox --root . --rw touch created-on-disk.txt
+```
+
+The CLI supports BusyBox-style multicall behaviour. If the binary is invoked via a symlink named after a built-in command, that command is executed directly.
 
 ## What's Out of Scope (v1)
 
