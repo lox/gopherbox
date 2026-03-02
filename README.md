@@ -209,7 +209,7 @@ type NetworkConfig struct {
   - Commands: `grep` (+ `egrep`, `fgrep`), `sed`, `head`, `tail`, `sort`, `uniq`, `wc`, `cut`, `tr`, `rev`, `tac`, `paste`, `fold`, `nl`, `expand`, `unexpand`, `column`, `comm`, `join`, `diff`, `strings`
   - Focus: option handling, stdin/file precedence, exit-status fidelity for no-match/partial-match cases.
 
-- [ ] **Phase 3 — Data & Search parity sweep**
+- [x] **Phase 3 — Data & Search parity sweep**
   - Commands: `awk`, `find`, `xargs`, `jq`, `base64`, `md5sum`, `sha1sum`, `sha256sum`
   - Focus: expression compatibility, traversal behaviour, tokenisation/quoting with `xargs`, deterministic hash output format.
 
@@ -231,6 +231,7 @@ type NetworkConfig struct {
 - `column` currently renders stable table-aligned output and does not emulate BSD `column` terminal-width fill mode.
 - `diff` currently emits a simplified line-by-line `<`/`>` delta format instead of full BSD/GNU hunk output.
 - `strings` scans UTF-8 printable sequences with a fixed minimum length of 4; binary edge-cases can differ from BSD `strings`.
+- `jq` compatibility is implemented via `gojq`; filter/file exit semantics match parity targets, but detailed stderr wording is not byte-for-byte identical to platform `jq` binaries.
 
 ## Standalone Usage
 

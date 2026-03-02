@@ -232,6 +232,60 @@ func TestCLIInvocationPhaseParityWithPOSIXSh(t *testing.T) {
 			}, "; "),
 		},
 		{
+			name: "phase3_data_and_search_awk_multifile",
+			script: strings.Join([]string{
+				"printf 'a 1\\n' > a.txt",
+				"printf 'b 2\\n' > b.txt",
+				"awk '{print $2}' a.txt b.txt",
+			}, "; "),
+		},
+		{
+			name:          "phase3_data_and_search_awk_missing",
+			compareStderr: true,
+			script: strings.Join([]string{
+				"awk '{print $1}' missing.txt",
+			}, "; "),
+		},
+		{
+			name:          "phase3_data_and_search_find_missing",
+			compareStderr: true,
+			script: strings.Join([]string{
+				"find missing -name '*.txt'",
+			}, "; "),
+		},
+		{
+			name: "phase3_data_and_search_xargs_quoting",
+			script: strings.Join([]string{
+				"printf \"'a b' c\\n\" | xargs -n 1 echo",
+			}, "; "),
+		},
+		{
+			name:          "phase3_data_and_search_xargs_missing_command",
+			compareStderr: true,
+			script: strings.Join([]string{
+				"printf 'a\\n' | xargs -n 1 does-not-exist",
+			}, "; "),
+		},
+		{
+			name: "phase3_data_and_search_jq_missing_file",
+			script: strings.Join([]string{
+				"jq '.x' missing.json",
+			}, "; "),
+		},
+		{
+			name: "phase3_data_and_search_jq_invalid_filter",
+			script: strings.Join([]string{
+				"echo '{}' | jq '.['",
+			}, "; "),
+		},
+		{
+			name:          "phase3_data_and_search_hash_missing",
+			compareStderr: true,
+			script: strings.Join([]string{
+				"sha256sum missing.txt",
+			}, "; "),
+		},
+		{
 			name: "phase4_archive_and_network",
 			script: strings.Join([]string{
 				"mkdir -p arch",
