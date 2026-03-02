@@ -3,8 +3,10 @@ package commands
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"regexp"
 	"sort"
 	"strconv"
@@ -46,7 +48,7 @@ func readNamedInputs(args []string, ioCtx CommandIO) ([]namedInput, int) {
 		abs := resolvePath(ioCtx.Cwd, arg)
 		data, err := afero.ReadFile(ioCtx.Fs, abs)
 		if err != nil {
-			writeErrf(ioCtx, "%s: %v\n", arg, err)
+			writeErrf(ioCtx, "%s: %s\n", arg, fileOpError(err))
 			exitCode = 1
 			continue
 		}
@@ -105,6 +107,7 @@ func cmdGrep(_ context.Context, args []string, ioCtx CommandIO) int {
 
 	pattern := filtered[0]
 	files := filtered[1:]
+	showFileName := len(files) > 1
 
 	if fixed {
 		pattern = regexp.QuoteMeta(pattern)
@@ -119,9 +122,47 @@ func cmdGrep(_ context.Context, args []string, ioCtx CommandIO) int {
 		return 2
 	}
 
-	inputs, readExit := readNamedInputs(files, ioCtx)
-	if readExit != 0 && len(inputs) == 0 {
-		return 2
+	inputs := make([]namedInput, 0, len(files))
+	hadReadError := false
+	if len(files) == 0 {
+		data, err := io.ReadAll(ioCtx.Stdin)
+		if err != nil {
+			writeErrf(ioCtx, "grep: stdin: %s\n", fileOpError(err))
+			return 2
+		}
+		inputs = append(inputs, namedInput{name: "-", data: data})
+	} else {
+		for _, file := range files {
+			if file == "-" {
+				data, err := io.ReadAll(ioCtx.Stdin)
+				if err != nil {
+					writeErrf(ioCtx, "grep: stdin: %s\n", fileOpError(err))
+					hadReadError = true
+					continue
+				}
+				inputs = append(inputs, namedInput{name: file, data: data})
+				continue
+			}
+
+			abs := resolvePath(ioCtx.Cwd, file)
+			data, err := afero.ReadFile(ioCtx.Fs, abs)
+			if err != nil {
+				if errors.Is(err, iofs.ErrNotExist) {
+					writeErrf(ioCtx, "grep: %s: No such file or directory\n", file)
+				} else {
+					writeErrf(ioCtx, "grep: %s: %s\n", file, fileOpError(err))
+				}
+				hadReadError = true
+				continue
+			}
+			inputs = append(inputs, namedInput{name: file, data: data})
+		}
+	}
+	if len(inputs) == 0 {
+		if hadReadError {
+			return 2
+		}
+		return 1
 	}
 
 	matchedAny := false
@@ -143,7 +184,7 @@ func cmdGrep(_ context.Context, args []string, ioCtx CommandIO) int {
 			}
 
 			prefix := ""
-			if len(inputs) > 1 {
+			if showFileName {
 				prefix = input.name + ":"
 			}
 			if showLineNo {
@@ -153,18 +194,18 @@ func cmdGrep(_ context.Context, args []string, ioCtx CommandIO) int {
 		}
 		if countOnly {
 			prefix := ""
-			if len(inputs) > 1 {
+			if showFileName {
 				prefix = input.name + ":"
 			}
 			_, _ = fmt.Fprintf(ioCtx.Stdout, "%s%d\n", prefix, matches)
 		}
 	}
 
+	if hadReadError {
+		return 2
+	}
 	if !matchedAny {
 		return 1
-	}
-	if readExit != 0 {
-		return 2
 	}
 	return 0
 }
@@ -239,18 +280,10 @@ func cmdSed(_ context.Context, args []string, ioCtx CommandIO) int {
 }
 
 func cmdHead(_ context.Context, args []string, ioCtx CommandIO) int {
-	n := 10
-	files := []string{}
-	for i := 0; i < len(args); i++ {
-		if args[i] == "-n" && i+1 < len(args) {
-			val, err := strconv.Atoi(args[i+1])
-			if err == nil && val >= 0 {
-				n = val
-			}
-			i++
-			continue
-		}
-		files = append(files, args[i])
+	n, files, ok := parseLineCountArgs(args)
+	if !ok {
+		writeErrf(ioCtx, "head: invalid number of lines\n")
+		return 1
 	}
 
 	inputs, readExit := readNamedInputs(files, ioCtx)
@@ -264,18 +297,10 @@ func cmdHead(_ context.Context, args []string, ioCtx CommandIO) int {
 }
 
 func cmdTail(_ context.Context, args []string, ioCtx CommandIO) int {
-	n := 10
-	files := []string{}
-	for i := 0; i < len(args); i++ {
-		if args[i] == "-n" && i+1 < len(args) {
-			val, err := strconv.Atoi(args[i+1])
-			if err == nil && val >= 0 {
-				n = val
-			}
-			i++
-			continue
-		}
-		files = append(files, args[i])
+	n, files, ok := parseLineCountArgs(args)
+	if !ok {
+		writeErrf(ioCtx, "tail: invalid number of lines\n")
+		return 1
 	}
 
 	inputs, readExit := readNamedInputs(files, ioCtx)
@@ -346,7 +371,7 @@ func cmdUniq(_ context.Context, args []string, ioCtx CommandIO) int {
 	count := 1
 	flush := func() {
 		if showCount {
-			_, _ = fmt.Fprintf(ioCtx.Stdout, "%7d %s\n", count, current)
+			_, _ = fmt.Fprintf(ioCtx.Stdout, "%4d %s\n", count, current)
 		} else {
 			_, _ = fmt.Fprintln(ioCtx.Stdout, current)
 		}
@@ -393,18 +418,18 @@ func cmdWc(_ context.Context, args []string, ioCtx CommandIO) int {
 	}
 
 	inputs, readExit := readNamedInputs(files, ioCtx)
-	formatCounts := func(lines, words, bytesCount int) []string {
+	formatCounts := func(lines, words, bytesCount int) string {
 		parts := make([]string, 0, 3)
 		if countLines {
-			parts = append(parts, fmt.Sprintf("%d", lines))
+			parts = append(parts, fmt.Sprintf("%8d", lines))
 		}
 		if countWords {
-			parts = append(parts, fmt.Sprintf("%d", words))
+			parts = append(parts, fmt.Sprintf("%8d", words))
 		}
 		if countBytes {
-			parts = append(parts, fmt.Sprintf("%d", bytesCount))
+			parts = append(parts, fmt.Sprintf("%8d", bytesCount))
 		}
-		return parts
+		return strings.Join(parts, "")
 	}
 
 	showName := len(files) > 0
@@ -419,17 +444,15 @@ func cmdWc(_ context.Context, args []string, ioCtx CommandIO) int {
 		totalWords += words
 		totalBytes += bytesCount
 
-		parts := formatCounts(lines, words, bytesCount)
+		line := formatCounts(lines, words, bytesCount)
 		if showName {
-			parts = append(parts, in.name)
+			line += " " + in.name
 		}
-		_, _ = fmt.Fprintln(ioCtx.Stdout, strings.Join(parts, " "))
+		_, _ = fmt.Fprintln(ioCtx.Stdout, line)
 	}
 
 	if showName && len(inputs) > 1 {
-		parts := formatCounts(totalLines, totalWords, totalBytes)
-		parts = append(parts, "total")
-		_, _ = fmt.Fprintln(ioCtx.Stdout, strings.Join(parts, " "))
+		_, _ = fmt.Fprintf(ioCtx.Stdout, "%s total\n", formatCounts(totalLines, totalWords, totalBytes))
 	}
 
 	return readExit
@@ -506,8 +529,12 @@ func cmdTr(_ context.Context, args []string, ioCtx CommandIO) int {
 		writeErrf(ioCtx, "tr: expected SET1 SET2\n")
 		return 1
 	}
-	from := []rune(args[0])
-	to := []rune(args[1])
+	from := expandTrSet(args[0])
+	to := expandTrSet(args[1])
+	if len(to) == 0 {
+		writeErrf(ioCtx, "tr: empty replacement set\n")
+		return 1
+	}
 	mapping := map[rune]rune{}
 	for i, r := range from {
 		if i < len(to) {
@@ -621,6 +648,10 @@ func cmdNl(_ context.Context, args []string, ioCtx CommandIO) int {
 	lineNo := 1
 	for _, in := range inputs {
 		for _, line := range splitLines(in.data) {
+			if line == "" {
+				_, _ = fmt.Fprintf(ioCtx.Stdout, "%6s\t%s\n", "", line)
+				continue
+			}
 			_, _ = fmt.Fprintf(ioCtx.Stdout, "%6d\t%s\n", lineNo, line)
 			lineNo++
 		}
@@ -632,19 +663,27 @@ func cmdExpand(_ context.Context, args []string, ioCtx CommandIO) int {
 	inputs, readExit := readNamedInputs(args, ioCtx)
 	for _, in := range inputs {
 		for _, line := range splitLines(in.data) {
-			line = strings.ReplaceAll(line, "\t", "        ")
-			_, _ = fmt.Fprintln(ioCtx.Stdout, line)
+			_, _ = fmt.Fprintln(ioCtx.Stdout, expandTabs(line, 8))
 		}
 	}
 	return readExit
 }
 
 func cmdUnexpand(_ context.Context, args []string, ioCtx CommandIO) int {
-	inputs, readExit := readNamedInputs(args, ioCtx)
+	convertAll := false
+	files := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "-a" {
+			convertAll = true
+			continue
+		}
+		files = append(files, arg)
+	}
+
+	inputs, readExit := readNamedInputs(files, ioCtx)
 	for _, in := range inputs {
 		for _, line := range splitLines(in.data) {
-			line = strings.ReplaceAll(line, "        ", "\t")
-			_, _ = fmt.Fprintln(ioCtx.Stdout, line)
+			_, _ = fmt.Fprintln(ioCtx.Stdout, unexpandTabs(line, 8, convertAll))
 		}
 	}
 	return readExit
@@ -850,4 +889,145 @@ func extractStrings(data []byte, minLen int) []string {
 	}
 	flush()
 	return out
+}
+
+func parseLineCountArgs(args []string) (int, []string, bool) {
+	n := 10
+	files := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-n" {
+			if i+1 >= len(args) {
+				return 0, nil, false
+			}
+			val, err := strconv.Atoi(args[i+1])
+			if err != nil || val < 0 {
+				return 0, nil, false
+			}
+			n = val
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-n") && len(arg) > 2 {
+			val, err := strconv.Atoi(arg[2:])
+			if err != nil || val < 0 {
+				return 0, nil, false
+			}
+			n = val
+			continue
+		}
+		files = append(files, arg)
+	}
+	return n, files, true
+}
+
+func expandTrSet(set string) []rune {
+	runes := []rune(set)
+	if len(runes) == 0 {
+		return nil
+	}
+	out := make([]rune, 0, len(runes))
+	for i := 0; i < len(runes); i++ {
+		if i+2 < len(runes) && runes[i+1] == '-' {
+			start := runes[i]
+			end := runes[i+2]
+			if start <= end {
+				for r := start; r <= end; r++ {
+					out = append(out, r)
+				}
+			} else {
+				for r := start; r >= end; r-- {
+					out = append(out, r)
+				}
+			}
+			i += 2
+			continue
+		}
+		out = append(out, runes[i])
+	}
+	return out
+}
+
+func expandTabs(line string, tabWidth int) string {
+	var out strings.Builder
+	col := 0
+	for _, r := range line {
+		if r == '\t' {
+			spaces := tabWidth - (col % tabWidth)
+			if spaces == 0 {
+				spaces = tabWidth
+			}
+			out.WriteString(strings.Repeat(" ", spaces))
+			col += spaces
+			continue
+		}
+		out.WriteRune(r)
+		col++
+	}
+	return out.String()
+}
+
+func unexpandTabs(line string, tabWidth int, convertAll bool) string {
+	var out strings.Builder
+	col := 0
+	inLeading := true
+	spaceCount := 0
+	spaceConvertible := false
+
+	flushSpaces := func() {
+		if spaceCount == 0 {
+			return
+		}
+		if !spaceConvertible {
+			out.WriteString(strings.Repeat(" ", spaceCount))
+			col += spaceCount
+			spaceCount = 0
+			return
+		}
+		remaining := spaceCount
+		for remaining > 0 {
+			toTab := tabWidth - (col % tabWidth)
+			if toTab == 0 {
+				toTab = tabWidth
+			}
+			if remaining >= toTab {
+				out.WriteByte('\t')
+				col += toTab
+				remaining -= toTab
+				continue
+			}
+			out.WriteString(strings.Repeat(" ", remaining))
+			col += remaining
+			remaining = 0
+		}
+		spaceCount = 0
+	}
+
+	for _, r := range line {
+		if r == ' ' {
+			if spaceCount == 0 {
+				spaceConvertible = convertAll || inLeading
+			}
+			spaceCount++
+			continue
+		}
+
+		flushSpaces()
+		if r == '\t' {
+			toTab := tabWidth - (col % tabWidth)
+			if toTab == 0 {
+				toTab = tabWidth
+			}
+			out.WriteByte('\t')
+			col += toTab
+			continue
+		}
+
+		inLeading = false
+		out.WriteRune(r)
+		col++
+	}
+
+	flushSpaces()
+	return out.String()
 }

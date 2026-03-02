@@ -205,7 +205,7 @@ type NetworkConfig struct {
   - Commands: `cat`, `cp`, `ls`, `mkdir`, `mv`, `rm`, `rmdir`, `touch`, `ln`, `stat`, `readlink`, `tree`, `file`
   - Focus: path semantics, error messages, overwrite/recursive behaviour, symlink edges.
 
-- [ ] **Phase 2 — Text Processing parity sweep**
+- [x] **Phase 2 — Text Processing parity sweep**
   - Commands: `grep` (+ `egrep`, `fgrep`), `sed`, `head`, `tail`, `sort`, `uniq`, `wc`, `cut`, `tr`, `rev`, `tac`, `paste`, `fold`, `nl`, `expand`, `unexpand`, `column`, `comm`, `join`, `diff`, `strings`
   - Focus: option handling, stdin/file precedence, exit-status fidelity for no-match/partial-match cases.
 
@@ -223,8 +223,14 @@ type NetworkConfig struct {
 
 - [ ] **Cross-phase completion criteria**
   - [x] Add process-level CLI parity tests (`gopherbox` vs `/bin/sh`) for representative workflows in each phase.
-  - [ ] Document intentional deviations from BusyBox/POSIX in README as explicit compatibility notes.
+  - [x] Document intentional deviations from BusyBox/POSIX in README as explicit compatibility notes.
   - [x] Keep `go test ./...` and `go test -race ./...` green with new parity coverage.
+
+## Compatibility Notes
+
+- `column` currently renders stable table-aligned output and does not emulate BSD `column` terminal-width fill mode.
+- `diff` currently emits a simplified line-by-line `<`/`>` delta format instead of full BSD/GNU hunk output.
+- `strings` scans UTF-8 printable sequences with a fixed minimum length of 4; binary edge-cases can differ from BSD `strings`.
 
 ## Standalone Usage
 

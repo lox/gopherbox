@@ -59,7 +59,7 @@ func runPOSIXSh(t *testing.T, cwd, script string) cliRunResult {
 	return runProcess(t, cwd, "/bin/sh", "-c", script)
 }
 
-func assertCLIParityWithPOSIXSh(t *testing.T, bin, script string, gopherboxArgs ...string) {
+func assertCLIParityWithPOSIXSh(t *testing.T, bin, script string, compareStderr bool, gopherboxArgs ...string) {
 	t.Helper()
 
 	gopherboxRoot := t.TempDir()
@@ -77,6 +77,9 @@ func assertCLIParityWithPOSIXSh(t *testing.T, bin, script string, gopherboxArgs 
 	}
 	if got.stdout != want.stdout {
 		t.Fatalf("stdout mismatch: got %q want %q", got.stdout, want.stdout)
+	}
+	if compareStderr && got.stderr != want.stderr {
+		t.Fatalf("stderr mismatch: got %q want %q", got.stderr, want.stderr)
 	}
 }
 
@@ -112,7 +115,7 @@ func TestCLIInvocationParitySubsetWithPOSIXSh(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			assertCLIParityWithPOSIXSh(t, bin, tc.script)
+			assertCLIParityWithPOSIXSh(t, bin, tc.script, false)
 		})
 	}
 }
@@ -127,9 +130,10 @@ func TestCLIInvocationPhaseParityWithPOSIXSh(t *testing.T) {
 	defer server.Close()
 
 	cases := []struct {
-		name         string
-		script       string
-		gopherboxArg []string
+		name          string
+		script        string
+		compareStderr bool
+		gopherboxArg  []string
 	}{
 		{
 			name: "phase1_file_operations",
@@ -171,6 +175,47 @@ func TestCLIInvocationPhaseParityWithPOSIXSh(t *testing.T) {
 				"printf 'b\\na\\na\\n' > sort.txt",
 				"sort sort.txt | uniq -c | awk '{print $1 \":\" $2}'",
 				"printf 'a,b,c\\n' | cut -d , -f 2 | tr b B | rev",
+			}, "; "),
+		},
+		{
+			name:          "phase2_text_processing_compact_n_flags",
+			compareStderr: true,
+			script: strings.Join([]string{
+				"printf '1\\n2\\n3\\n' | head -n2",
+				"printf '1\\n2\\n3\\n' | tail -n2",
+			}, "; "),
+		},
+		{
+			name:          "phase2_text_processing_grep_prefix_and_errors",
+			compareStderr: true,
+			script: strings.Join([]string{
+				"printf 'alpha\\n' > ok.txt",
+				"grep alpha ok.txt missing.txt",
+			}, "; "),
+		},
+		{
+			name: "phase2_text_processing_tr_ranges",
+			script: strings.Join([]string{
+				"printf 'abc\\n' | tr a-z A-Z",
+			}, "; "),
+		},
+		{
+			name: "phase2_text_processing_nl_default",
+			script: strings.Join([]string{
+				"printf '\\nA\\n\\n' | nl",
+			}, "; "),
+		},
+		{
+			name: "phase2_text_processing_unexpand_default",
+			script: strings.Join([]string{
+				"printf 'a        b\\n' | unexpand",
+			}, "; "),
+		},
+		{
+			name: "phase2_text_processing_wc_and_uniq_counts",
+			script: strings.Join([]string{
+				"printf 'a b\\nc\\n' | wc",
+				"printf 'a\\na\\nb\\n' | uniq -c",
 			}, "; "),
 		},
 		{
@@ -222,7 +267,7 @@ func TestCLIInvocationPhaseParityWithPOSIXSh(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			assertCLIParityWithPOSIXSh(t, bin, tc.script, tc.gopherboxArg...)
+			assertCLIParityWithPOSIXSh(t, bin, tc.script, tc.compareStderr, tc.gopherboxArg...)
 		})
 	}
 }

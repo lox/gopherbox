@@ -88,7 +88,7 @@ func TestCommandContractSuite(t *testing.T) {
 					"printf 'b\na\na\n' > in.txt",
 					"sort in.txt | uniq -c",
 				}, "; "),
-				want: execExpectation{exitCode: 0, stdout: "      2 a\n      1 b\n"},
+				want: execExpectation{exitCode: 0, stdout: "   2 a\n   1 b\n"},
 			},
 			{
 				name: "cut_tr_rev",
